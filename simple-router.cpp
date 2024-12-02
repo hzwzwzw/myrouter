@@ -28,8 +28,9 @@ namespace simple_router
   // IMPLEMENT THIS METHOD
   /**
    * This method is called each time the router receives a packet on
-   * the interface . The packet buffer \p packet and the receiving
-   * interface \p inIface are passed in as parameters .
+   * the interface.  The packet buffer \p packet and the receiving
+   * interface \p inIface are passed in as parameters. The packet is
+   * complete with ethernet headers.
    */
   void
   SimpleRouter::handlePacket(const Buffer &packet, const std::string &inIface)
@@ -46,6 +47,137 @@ namespace simple_router
     std::cerr << getRoutingTable() << std::endl;
 
     // FILL THIS IN
+
+    // parse to ethernet header
+    if (packet.size() < 14)
+    {
+      std::cerr << "Packet too small to contain Ethernet header" << std::endl;
+      return;
+    }
+    ethernet_hdr ethHeader;
+    std::memcpy(ethHeader.ether_dhost, packet.data(), ETHER_ADDR_LEN);
+    std::memcpy(ethHeader.ether_shost, packet.data() + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
+    ethHeader.ether_type = ntohs(*reinterpret_cast<const uint16_t *>(packet.data() + 2 * ETHER_ADDR_LEN));
+    std::vector<uint8_t> payload(packet.data() + 14, packet.data() + packet.size());
+
+    std::vector<uint8_t> destMac(ethHeader.ether_dhost, ethHeader.ether_dhost + ETHER_ADDR_LEN);
+    std::vector<uint8_t> srcMac(ethHeader.ether_shost, ethHeader.ether_shost + ETHER_ADDR_LEN);
+    std::cerr << "Destination MAC address: " << macToString(destMac) << std::endl;
+    std::cerr << "Source MAC address: " << macToString(srcMac) << std::endl;
+
+    // check type: arp or ipv4
+    if (ethHeader.ether_type == ethertype_arp)
+    {
+      std::cerr << "ARP packet" << std::endl;
+      if (payload.size() < 28)
+      {
+        std::cerr << "Packet too small to contain ARP header" << std::endl;
+        return;
+      }
+      arp_hdr arpHeader;
+      arpHeader.arp_hrd = ntohs(*reinterpret_cast<const uint16_t *>(payload.data()));
+      arpHeader.arp_pro = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
+      arpHeader.arp_hln = payload[4];
+      arpHeader.arp_pln = payload[5];
+      arpHeader.arp_op = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6));
+      std::memcpy(arpHeader.arp_sha, payload.data() + 8, ETHER_ADDR_LEN);
+      arpHeader.arp_sip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 14));
+      std::memcpy(arpHeader.arp_tha, payload.data() + 18, ETHER_ADDR_LEN);
+      arpHeader.arp_tip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 24));
+      std::cerr << "Sender MAC address: " << macToString(std::vector<uint8_t>(arpHeader.arp_sha, arpHeader.arp_sha + ETHER_ADDR_LEN)) << std::endl;
+      std::cerr << "Sender IP address: " << ipToString(arpHeader.arp_sip) << std::endl;
+      std::cerr << "Target MAC address: " << macToString(std::vector<uint8_t>(arpHeader.arp_tha, arpHeader.arp_tha + ETHER_ADDR_LEN)) << std::endl;
+      std::cerr << "Target IP address: " << ipToString(arpHeader.arp_tip) << std::endl;
+
+      // request or reply
+      if (arpHeader.arp_op == arp_op_request)
+      {
+        std::cerr << "ARP request" << std::endl;
+        // // check target mac should be FF:FF:FF:FF:FF:FF
+        // if (std::memcmp(arpHeader.arp_tha, "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN) != 0)
+        // {
+        //   std::cerr << "Target MAC address is not broadcast" << std::endl;
+        //   return;
+        // }
+        // check if target IP is one of the router's interfaces
+        if (iface->ip == arpHeader.arp_tip)
+        {
+          std::cerr << "Target IP is one of the router's interfaces" << std::endl;
+          // send ARP reply
+          Buffer reply;
+          reply.resize(14 + 28); // ethernet header + arp header
+          // ethernet
+          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+          // arp
+          *reinterpret_cast<uint16_t *>(reply.data() + 14) = arpHeader.arp_hrd;
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = arpHeader.arp_pro; // ipv4
+          reply[18] = arpHeader.arp_hln;
+          reply[19] = arpHeader.arp_pln;
+          *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
+          std::memcpy(reply.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(reply.data() + 28) = htonl(iface->ip);
+          std::memcpy(reply.data() + 32, arpHeader.arp_sha, ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(arpHeader.arp_sip);
+
+          sendPacket(reply, inIface);
+        }
+        else
+        {
+          std::cerr << "Target IP is not one of the router's interfaces" << std::endl;
+          // check arp cache
+          auto arpEntry = m_arp.lookup(arpHeader.arp_tip);
+          if (arpEntry == nullptr)
+          {
+            std::cerr << "Target IP is not in ARP cache" << std::endl;
+            return;
+          }
+          std::cerr << "Target IP is in ARP cache" << std::endl;
+          // send ARP reply
+          Buffer reply;
+          reply.resize(14 + 28); // ethernet header + arp header
+          // ethernet
+          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+          // arp
+          *reinterpret_cast<uint16_t *>(reply.data() + 14) = arpHeader.arp_hrd;
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = arpHeader.arp_pro; // ipv4
+          reply[18] = arpHeader.arp_hln;
+          reply[19] = arpHeader.arp_pln;
+          *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
+          std::memcpy(reply.data() + 22, arpEntry->mac.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(reply.data() + 28) = htonl(arpHeader.arp_tip);
+          std::memcpy(reply.data() + 32, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(iface->ip);
+
+          sendPacket(reply, inIface);
+        }
+      }
+      else if (arpHeader.arp_op == arp_op_reply)
+      {
+        std::cerr << "ARP reply" << std::endl;
+        Buffer mac;
+        mac.resize(ETHER_ADDR_LEN);
+        std::memcpy(mac.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
+        // update ARP table
+        m_arp.insertArpEntry(mac, arpHeader.arp_sip);
+      }
+      else
+      {
+        std::cerr << "Not an ARP request or reply" << std::endl;
+        return;
+      }
+    }
+    else if (ethHeader.ether_type == ethertype_ip)
+    {
+    }
+    else
+    {
+      std::cerr << "Not an ARP or IP packet" << std::endl;
+      return;
+    }
   }
   //////////////////////////////////////////////////////////////////////////
   //////////////////////////////////////////////////////////////////////////
