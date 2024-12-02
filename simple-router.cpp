@@ -130,29 +130,44 @@ namespace simple_router
           auto arpEntry = m_arp.lookup(arpHeader.arp_tip);
           if (arpEntry == nullptr)
           {
-            std::cerr << "Target IP is not in ARP cache" << std::endl;
-            return;
-          }
-          std::cerr << "Target IP is in ARP cache" << std::endl;
-          // send ARP reply
-          Buffer reply;
-          reply.resize(14 + 28); // ethernet header + arp header
-          // ethernet
-          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
-          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
-          // arp
-          *reinterpret_cast<uint16_t *>(reply.data() + 14) = arpHeader.arp_hrd;
-          *reinterpret_cast<uint16_t *>(reply.data() + 16) = arpHeader.arp_pro; // ipv4
-          reply[18] = arpHeader.arp_hln;
-          reply[19] = arpHeader.arp_pln;
-          *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
-          std::memcpy(reply.data() + 22, arpEntry->mac.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(reply.data() + 28) = htonl(arpHeader.arp_tip);
-          std::memcpy(reply.data() + 32, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(iface->ip);
+            // forward ARP request
+            // find next hop
+            auto entry = m_routingTable.lookup(arpHeader.arp_tip);
+            if (entry.dest & entry.mask != entry.dest & arpHeader.arp_tip)
+            {
+              std::cerr << "Destination IP is not in routing table" << std::endl;
+              return;
+            }
+            std::cerr << "Destination IP is in routing table" << std::endl;
+            std::cerr << "Next hop IP address: " << ipToString(entry.dest) << std::endl;
+            std::cerr << "Output interface: " << entry.ifName << std::endl;
 
-          sendPacket(reply, inIface);
+            // send packet to next hop
+            sendPacket(packet, entry.ifName);
+          }
+          else
+          {
+            std::cerr << "Target IP is in ARP cache" << std::endl;
+            // send ARP reply
+            Buffer reply;
+            reply.resize(14 + 28); // ethernet header + arp header
+            // ethernet
+            std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+            std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+            *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+            // arp
+            *reinterpret_cast<uint16_t *>(reply.data() + 14) = arpHeader.arp_hrd;
+            *reinterpret_cast<uint16_t *>(reply.data() + 16) = arpHeader.arp_pro; // ipv4
+            reply[18] = arpHeader.arp_hln;
+            reply[19] = arpHeader.arp_pln;
+            *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
+            std::memcpy(reply.data() + 22, arpEntry->mac.data(), ETHER_ADDR_LEN);
+            *reinterpret_cast<uint32_t *>(reply.data() + 28) = htonl(arpHeader.arp_tip);
+            std::memcpy(reply.data() + 32, iface->addr.data(), ETHER_ADDR_LEN);
+            *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(iface->ip);
+
+            sendPacket(reply, inIface);
+          }
         }
       }
       else if (arpHeader.arp_op == arp_op_reply)
@@ -172,7 +187,7 @@ namespace simple_router
     }
     else if (ethHeader.ether_type == ethertype_ip)
     {
-    }
+        }
     else
     {
       std::cerr << "Not an ARP or IP packet" << std::endl;
