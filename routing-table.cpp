@@ -34,6 +34,30 @@ namespace simple_router
   {
 
     // FILL THIS IN
+
+    // longest prefix match
+    int max = 0;
+    RoutingTableEntry entry_max;
+    for (const auto &entry : m_entries)
+    {
+      // check if the ip address is in the subnet
+      if ((ip & entry.mask) == (entry.dest & entry.mask))
+      {
+        if (entry.mask > max)
+        {
+          max = entry.mask;
+          entry_max = entry;
+        }
+      }
+    }
+    if (max != 0)
+    {
+      return entry_max;
+    }
+    else
+    {
+      throw std::runtime_error("Routing entry not found");
+    }
   }
   //////////////////////////////////////////////////////////////////////////
   //////////////////////////////////////////////////////////////////////////
