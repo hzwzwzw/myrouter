@@ -322,11 +322,148 @@ namespace simple_router
         else
         {
           std::cerr << "Not an ICMP packet" << std::endl;
+          // send ICMP destination unreachable
+          Buffer reply;
+          reply.resize(14 + 20 + 8);
+          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+          reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
+          reply[15] = ipHeader.ip_tos;
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8); // total length
+          *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(0);      // identification
+          reply[20] = 64;                                                   // not sliced
+          reply[21] = 0;
+          reply[22] = 64; // TTL
+          reply[23] = ip_protocol_icmp;
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
+          *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
+          // options and padding 4 bytes
+          reply[38] = ICMP_TYPE_DEST_UNREACH;
+          reply[39] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
+          *reinterpret_cast<uint16_t *>(reply.data() + 42) = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 44) = 0;
+
+          // calculate checksum of ip
+          sum = 0;
+          for (size_t i = 14; i < 34; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(~sum);
+
+          // calculate checksum of icmp
+          sum = 0;
+          for (size_t i = 38; i < 46; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+
+          sendPacket(reply, inIface);
         }
       }
       else
       {
         std::cerr << "Destination IP is not one of the router's interfaces" << std::endl;
+
+        // ttl decrement
+        if (ipHeader.ip_ttl == 0)
+        {
+          std::cerr << "TTL is 0" << std::endl;
+          // send ICMP time exceeded
+          Buffer reply;
+          reply.resize(14 + 20 + 8);
+          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+          reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
+          reply[15] = ipHeader.ip_tos;
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8); // total length
+          *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(0);      // identification
+          reply[20] = 64;                                                   // not sliced
+          reply[21] = 0;
+          reply[22] = 64; // TTL
+          reply[23] = ip_protocol_icmp;
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
+          *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
+          // options and padding 4 bytes
+          reply[38] = ICMP_TYPE_TIME_EXCEEDED;
+          reply[39] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
+          *reinterpret_cast<uint16_t *>(reply.data() + 42) = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 44) = 0;
+
+          // calculate checksum of ip
+          sum = 0;
+          for (size_t i = 14; i < 34; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(~sum);
+
+          // calculate checksum of icmp
+          sum = 0;
+          for (size_t i = 38; i < 46; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+
+          sendPacket(reply, inIface);
+          return;
+        }
+
+        // decrement ttl
+        ipHeader.ip_ttl--;
+        // recalculate checksum
+        sum = 0;
+        for (size_t i = 0; i < 20; i += 2)
+        {
+          sum += ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + i));
+        }
+        while (sum >> 16)
+        {
+          sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        ipHeader.ip_sum = ~sum;
+        // update ip header to packet
+        Buffer reply;
+        reply.resize(14 + 20 + payload.size() - 20);
+        std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+        std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+        *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+        reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
+        reply[15] = ipHeader.ip_tos;
+        *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(ipHeader.ip_len);
+        *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(ipHeader.ip_id);
+        *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(ipHeader.ip_off);
+        reply[22] = ipHeader.ip_ttl;
+        reply[23] = ipHeader.ip_p;
+        *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(ipHeader.ip_sum);
+        *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_src);
+        *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_dst);
+        std::memcpy(reply.data() + 34, payload.data() + 20, payload.size() - 20);
+
         // check if destination IP is in routing table
         auto entry = m_routingTable.lookup(ipHeader.ip_dst);
         if (entry.dest & entry.mask != entry.dest & ipHeader.ip_dst)
@@ -339,7 +476,7 @@ namespace simple_router
         std::cerr << "Output interface: " << entry.ifName << std::endl;
 
         // send packet to next hop
-        sendPacket(packet, entry.ifName);
+        sendPacket(reply, entry.ifName);
       }
     }
     else

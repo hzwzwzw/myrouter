@@ -56,7 +56,7 @@ namespace simple_router
     }
     else
     {
-      std::cerr << "No matching entry found for ip address: " << ipToString(ip) << std::endl;
+      // std::cerr << "No matching entry found for ip address: " << ipToString(ip) << std::endl;
       return RoutingTableEntry();
     }
   }
