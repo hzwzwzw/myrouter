@@ -187,11 +187,164 @@ namespace simple_router
     }
     else if (ethHeader.ether_type == ethertype_ip)
     {
+      std::cerr << "IP packet" << std::endl;
+      if (payload.size() < 20)
+      {
+        std::cerr << "Packet too small to contain IP header" << std::endl;
+        return;
+      }
+      ip_hdr ipHeader;
+      ipHeader.ip_v = payload[0] >> 4;
+      ipHeader.ip_hl = payload[0] & 0x0F;
+      ipHeader.ip_tos = payload[1];
+      ipHeader.ip_len = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
+      ipHeader.ip_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 4));
+      ipHeader.ip_off = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6)); // flag and offset
+      ipHeader.ip_ttl = payload[8];
+      ipHeader.ip_p = payload[9];
+      ipHeader.ip_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 10));
+      ipHeader.ip_src = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 12));
+      ipHeader.ip_dst = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 16));
+      std::cerr << "Source IP address: " << ipToString(ipHeader.ip_src) << std::endl;
+      std::cerr << "Destination IP address: " << ipToString(ipHeader.ip_dst) << std::endl;
+
+      // checksum
+      uint32_t sum = 0;
+      for (size_t i = 0; i < 20; i += 2)
+      {
+        sum += ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + i));
+      }
+      while (sum >> 16)
+      {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+      }
+      if ((sum & 0xFFFF) != 0xFFFF)
+      {
+        std::cerr << "IP checksum error" << std::endl;
+        return;
+      }
+
+      // check if destination IP is one of the router's interfaces
+      if (iface->ip == ipHeader.ip_dst)
+      {
+        std::cerr << "Destination IP is one of the router's interfaces" << std::endl;
+        // check if packet is ICMP
+        if (ipHeader.ip_p == ip_protocol_icmp)
+        {
+          std::cerr << "ICMP packet" << std::endl;
+          if (payload.size() < 32)
+          {
+            std::cerr << "Packet too small to contain ICMP header" << std::endl;
+            return;
+          }
+          icmp_echo_hdr icmpHeader;
+          icmpHeader.icmp_type = payload[24];
+          if (icmpHeader.icmp_type != ICMP_TYPE_ECHO_REQUEST)
+          {
+            std::cerr << "Not an ICMP echo request" << std::endl;
+            return;
+          }
+          icmpHeader.icmp_code = payload[25];
+          icmpHeader.icmp_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 26));
+          icmpHeader.icmp_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 28));
+          icmpHeader.icmp_seq = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 30));
+          std::cerr << "ICMP type: " << icmpHeader.icmp_type << std::endl;
+          std::cerr << "ICMP code: " << icmpHeader.icmp_code << std::endl;
+          std::cerr << "ICMP id: " << icmpHeader.icmp_id << std::endl;
+          std::cerr << "ICMP seq: " << icmpHeader.icmp_seq << std::endl;
+
+          // checksum
+          sum = 0;
+          for (size_t i = 20; i < 32; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          if ((sum & 0xFFFF) != 0xFFFF)
+          {
+            std::cerr << "ICMP checksum error" << std::endl;
+            return;
+          }
+
+          // send ICMP reply
+          Buffer reply;
+          reply.resize(14 + 20 + 8);
+          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+          reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
+          reply[15] = ipHeader.ip_tos;
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8); // total length
+          *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(0);      // identification
+          reply[20] = 64;                                                   // not sliced
+          reply[21] = 0;
+          reply[22] = 64; // TTL
+          reply[23] = ip_protocol_icmp;
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
+          *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
+          // options and padding 4 bytes
+          reply[38] = ICMP_TYPE_ECHO_REPLY;
+          reply[39] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
+          *reinterpret_cast<uint16_t *>(reply.data() + 42) = icmpHeader.icmp_id;
+          *reinterpret_cast<uint16_t *>(reply.data() + 44) = icmpHeader.icmp_seq;
+
+          // calculate checksum of ip
+          sum = 0;
+          for (size_t i = 14; i < 34; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(~sum);
+
+          // calculate checksum of icmp
+          sum = 0;
+          for (size_t i = 38; i < 46; i += 2)
+          {
+            sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
+          }
+          while (sum >> 16)
+          {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+          }
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+
+          sendPacket(reply, inIface);
         }
+        else
+        {
+          std::cerr << "Not an ICMP packet" << std::endl;
+        }
+      }
+      else
+      {
+        std::cerr << "Destination IP is not one of the router's interfaces" << std::endl;
+        // check if destination IP is in routing table
+        auto entry = m_routingTable.lookup(ipHeader.ip_dst);
+        if (entry.dest & entry.mask != entry.dest & ipHeader.ip_dst)
+        {
+          std::cerr << "Destination IP is not in routing table" << std::endl;
+          return;
+        }
+        std::cerr << "Destination IP is in routing table" << std::endl;
+        std::cerr << "Next hop IP address: " << ipToString(entry.dest) << std::endl;
+        std::cerr << "Output interface: " << entry.ifName << std::endl;
+
+        // send packet to next hop
+        sendPacket(packet, entry.ifName);
+      }
+    }
     else
     {
       std::cerr << "Not an ARP or IP packet" << std::endl;
-      return;
     }
   }
   //////////////////////////////////////////////////////////////////////////
