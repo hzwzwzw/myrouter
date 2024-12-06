@@ -32,10 +32,69 @@ namespace simple_router
    * interface \p inIface are passed in as parameters. The packet is
    * complete with ethernet headers.
    */
+
+  std::vector<PacketQueueItem> m_packetQueue; // buffer, ip, iface
+  bool
+  SimpleRouter::addrIsInterface(const Buffer &addr) const
+  {
+    std::cerr << "Destination MAC address: " << macToString(addr) << std::endl;
+    for (const auto &iface : m_ifaces)
+    {
+      std::cerr << "Interface MAC address: " << macToString(iface.addr) << std::endl;
+      if (std::memcmp(iface.addr.data(), addr.data(), ETHER_ADDR_LEN) == 0)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool
+  SimpleRouter::ipIsInterface(uint32_t ip) const
+  {
+    // std::cerr << "Destination IP: " << ipToString(ip) << std::endl;
+    for (const auto &iface : m_ifaces)
+    {
+      // std::cerr << "Interface IP: " << ipToString(iface.ip) << std::endl;
+      // std::cerr << "Address: " << macToString(iface.addr) << std::endl;
+      if (iface.ip == ip)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void
+  SimpleRouter::send_arp_reply(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface)
+  {
+    // send ARP reply
+    Buffer reply;
+    reply.resize(14 + 28); // ethernet header + arp header
+    // ethernet
+    std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
+    std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+    *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+    // arp
+    *reinterpret_cast<uint16_t *>(reply.data() + 14) = htons(arpHeader.arp_hrd);
+    *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(arpHeader.arp_pro); // ipv4
+    reply[18] = arpHeader.arp_hln;
+    reply[19] = arpHeader.arp_pln;
+    *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
+    std::memcpy(reply.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
+    *reinterpret_cast<uint32_t *>(reply.data() + 28) = iface->ip;
+    std::memcpy(reply.data() + 32, arpHeader.arp_sha, ETHER_ADDR_LEN);
+    *reinterpret_cast<uint32_t *>(reply.data() + 38) = arpHeader.arp_sip;
+    // *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(arpHeader.arp_sip);
+    print_hdr_eth(reply.data());
+    print_hdr_arp(reply.data() + 14);
+    sendPacket(reply, inIface);
+  }
+
   void
   SimpleRouter::handlePacket(const Buffer &packet, const std::string &inIface)
   {
-    std::cerr << "Got packet of size " << packet.size() << " on interface " << inIface << std::endl;
+    std::cerr << "\n\n\nGot packet of size " << packet.size() << " on interface " << inIface << std::endl;
 
     const Interface *iface = findIfaceByName(inIface);
     if (iface == nullptr)
@@ -44,7 +103,7 @@ namespace simple_router
       return;
     }
 
-    std::cerr << getRoutingTable() << std::endl;
+    // std::cerr << getRoutingTable() << std::endl;
 
     // FILL THIS IN
 
@@ -54,17 +113,35 @@ namespace simple_router
       std::cerr << "Packet too small to contain Ethernet header" << std::endl;
       return;
     }
-    ethernet_hdr ethHeader;
-    std::memcpy(ethHeader.ether_dhost, packet.data(), ETHER_ADDR_LEN);
-    std::memcpy(ethHeader.ether_shost, packet.data() + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
-    ethHeader.ether_type = ntohs(*reinterpret_cast<const uint16_t *>(packet.data() + 2 * ETHER_ADDR_LEN));
-    std::vector<uint8_t> payload(packet.data() + 14, packet.data() + packet.size());
+    ethernet_hdr ethHeader = *reinterpret_cast<const ethernet_hdr *>(packet.data());
+    ethHeader.ether_type = ntohs(ethHeader.ether_type);
+    // std::memcpy(ethHeader.ether_dhost, packet.data(), ETHER_ADDR_LEN);
+    // std::memcpy(ethHeader.ether_shost, packet.data() + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
+    // ethHeader.ether_type = ntohs(*reinterpret_cast<const uint16_t *>(packet.data() + 2 * ETHER_ADDR_LEN));
 
+    std::vector<uint8_t> payload(packet.data() + 14, packet.data() + packet.size());
     std::vector<uint8_t> destMac(ethHeader.ether_dhost, ethHeader.ether_dhost + ETHER_ADDR_LEN);
     std::vector<uint8_t> srcMac(ethHeader.ether_shost, ethHeader.ether_shost + ETHER_ADDR_LEN);
+
     std::cerr << "Destination MAC address: " << macToString(destMac) << std::endl;
     std::cerr << "Source MAC address: " << macToString(srcMac) << std::endl;
 
+    // check if dest address is broadcast or in router's interface
+    if (std::memcmp(ethHeader.ether_dhost, "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN) == 0)
+    {
+      std::cerr << "Broadcast packet" << std::endl;
+    }
+    else if (addrIsInterface(destMac))
+    {
+      std::cerr << "Destination MAC address is one of the router's interfaces" << std::endl;
+    }
+    else
+    {
+      std::cerr << "Destination MAC address is not broadcast or one of the router's interfaces" << std::endl;
+      return;
+    }
+    print_hdr_eth(packet.data());
+    // std::cerr << "Type: " << ethHeader.ether_type << std::endl;
     // check type: arp or ipv4
     if (ethHeader.ether_type == ethertype_arp)
     {
@@ -74,21 +151,27 @@ namespace simple_router
         std::cerr << "Packet too small to contain ARP header" << std::endl;
         return;
       }
-      arp_hdr arpHeader;
-      arpHeader.arp_hrd = ntohs(*reinterpret_cast<const uint16_t *>(payload.data()));
-      arpHeader.arp_pro = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
-      arpHeader.arp_hln = payload[4];
-      arpHeader.arp_pln = payload[5];
-      arpHeader.arp_op = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6));
-      std::memcpy(arpHeader.arp_sha, payload.data() + 8, ETHER_ADDR_LEN);
-      arpHeader.arp_sip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 14));
-      std::memcpy(arpHeader.arp_tha, payload.data() + 18, ETHER_ADDR_LEN);
-      arpHeader.arp_tip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 24));
+      arp_hdr arpHeader = *reinterpret_cast<const arp_hdr *>(payload.data());
+      arpHeader.arp_hrd = ntohs(arpHeader.arp_hrd);
+      arpHeader.arp_pro = ntohs(arpHeader.arp_pro);
+      arpHeader.arp_op = ntohs(arpHeader.arp_op);
+      // arpHeader.arp_sip = ntohl(arpHeader.arp_sip);
+      // arpHeader.arp_tip = ntohl(arpHeader.arp_tip);
+      // arpHeader.arp_hrd = ntohs(*reinterpret_cast<const uint16_t *>(payload.data()));
+      // arpHeader.arp_pro = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
+      // arpHeader.arp_hln = payload[4];
+      // arpHeader.arp_pln = payload[5];
+      // arpHeader.arp_op = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6));
+      // std::memcpy(arpHeader.arp_sha, payload.data() + 8, ETHER_ADDR_LEN);
+      // arpHeader.arp_sip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 14));
+      // std::memcpy(arpHeader.arp_tha, payload.data() + 18, ETHER_ADDR_LEN);
+      // arpHeader.arp_tip = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 24));
       std::cerr << "Sender MAC address: " << macToString(std::vector<uint8_t>(arpHeader.arp_sha, arpHeader.arp_sha + ETHER_ADDR_LEN)) << std::endl;
       std::cerr << "Sender IP address: " << ipToString(arpHeader.arp_sip) << std::endl;
       std::cerr << "Target MAC address: " << macToString(std::vector<uint8_t>(arpHeader.arp_tha, arpHeader.arp_tha + ETHER_ADDR_LEN)) << std::endl;
       std::cerr << "Target IP address: " << ipToString(arpHeader.arp_tip) << std::endl;
-
+      print_hdr_arp(payload.data());
+      std::cerr << "Operation: " << arpHeader.arp_op << std::endl;
       // request or reply
       if (arpHeader.arp_op == arp_op_request)
       {
@@ -100,28 +183,10 @@ namespace simple_router
         //   return;
         // }
         // check if target IP is one of the router's interfaces
-        if (iface->ip == arpHeader.arp_tip)
+        if (ipIsInterface(arpHeader.arp_tip))
         {
           std::cerr << "Target IP is one of the router's interfaces" << std::endl;
-          // send ARP reply
-          Buffer reply;
-          reply.resize(14 + 28); // ethernet header + arp header
-          // ethernet
-          std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
-          std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
-          // arp
-          *reinterpret_cast<uint16_t *>(reply.data() + 14) = arpHeader.arp_hrd;
-          *reinterpret_cast<uint16_t *>(reply.data() + 16) = arpHeader.arp_pro; // ipv4
-          reply[18] = arpHeader.arp_hln;
-          reply[19] = arpHeader.arp_pln;
-          *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(arp_op_reply);
-          std::memcpy(reply.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(reply.data() + 28) = htonl(iface->ip);
-          std::memcpy(reply.data() + 32, arpHeader.arp_sha, ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(reply.data() + 38) = htonl(arpHeader.arp_sip);
-
-          sendPacket(reply, inIface);
+          send_arp_reply(ethHeader, arpHeader, iface, inIface);
         }
         else
         {
@@ -133,7 +198,9 @@ namespace simple_router
             // forward ARP request
             // find next hop
             auto entry = m_routingTable.lookup(arpHeader.arp_tip);
-            if (entry.dest & entry.mask != entry.dest & arpHeader.arp_tip)
+            std::cerr << "Destination IP address: " << ipToString(arpHeader.arp_tip) << std::endl;
+            std::cerr << "Next hop IP address: " << ipToString(entry.dest) << std::endl;
+            if ((entry.dest & entry.mask) != (entry.dest & arpHeader.arp_tip))
             {
               std::cerr << "Destination IP is not in routing table" << std::endl;
               return;
@@ -176,8 +243,30 @@ namespace simple_router
         Buffer mac;
         mac.resize(ETHER_ADDR_LEN);
         std::memcpy(mac.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
+        std::cerr << "Sender MAC address: " << macToString(mac) << std::endl;
         // update ARP table
         m_arp.insertArpEntry(mac, arpHeader.arp_sip);
+
+        // send packets in queue
+        std::cerr << m_packetQueue.size() << std::endl;
+        for (auto it = m_packetQueue.begin(); it != m_packetQueue.end();)
+        {
+          if (it->ip == arpHeader.arp_sip)
+          {
+            Buffer forward = it->forward;
+            std::memcpy(forward.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
+            sendPacket(forward, it->face);
+            it = m_packetQueue.erase(it);
+            if (it == m_packetQueue.end())
+            {
+              break;
+            }
+          }
+          else
+          {
+            ++it;
+          }
+        }
       }
       else
       {
@@ -193,18 +282,26 @@ namespace simple_router
         std::cerr << "Packet too small to contain IP header" << std::endl;
         return;
       }
-      ip_hdr ipHeader;
-      ipHeader.ip_v = payload[0] >> 4;
-      ipHeader.ip_hl = payload[0] & 0x0F;
-      ipHeader.ip_tos = payload[1];
-      ipHeader.ip_len = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
-      ipHeader.ip_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 4));
-      ipHeader.ip_off = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6)); // flag and offset
-      ipHeader.ip_ttl = payload[8];
-      ipHeader.ip_p = payload[9];
-      ipHeader.ip_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 10));
-      ipHeader.ip_src = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 12));
-      ipHeader.ip_dst = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 16));
+      ip_hdr ipHeader = *reinterpret_cast<const ip_hdr *>(payload.data());
+      ipHeader.ip_len = ntohs(ipHeader.ip_len);
+      ipHeader.ip_id = ntohs(ipHeader.ip_id);
+      ipHeader.ip_off = ntohs(ipHeader.ip_off);
+      // keep checksum in NBO
+      // ipHeader.ip_src = ntohl(ipHeader.ip_src);
+      // ipHeader.ip_dst = ntohl(ipHeader.ip_dst);
+
+      // ipHeader.ip_v = payload[0] >> 4;
+      // ipHeader.ip_hl = payload[0] & 0x0F;
+      // ipHeader.ip_tos = payload[1];
+      // ipHeader.ip_len = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 2));
+      // ipHeader.ip_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 4));
+      // ipHeader.ip_off = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 6)); // flag and offset
+      // ipHeader.ip_ttl = payload[8];
+      // ipHeader.ip_p = payload[9];
+      // ipHeader.ip_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 10));
+      // ipHeader.ip_src = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 12));
+      // ipHeader.ip_dst = ntohl(*reinterpret_cast<const uint32_t *>(payload.data() + 16));
+      print_hdr_ip(payload.data());
       std::cerr << "Source IP address: " << ipToString(ipHeader.ip_src) << std::endl;
       std::cerr << "Destination IP address: " << ipToString(ipHeader.ip_dst) << std::endl;
 
@@ -225,7 +322,7 @@ namespace simple_router
       }
 
       // check if destination IP is one of the router's interfaces
-      if (iface->ip == ipHeader.ip_dst)
+      if (ipIsInterface(ipHeader.ip_dst))
       {
         std::cerr << "Destination IP is one of the router's interfaces" << std::endl;
         // check if packet is ICMP
@@ -237,31 +334,37 @@ namespace simple_router
             std::cerr << "Packet too small to contain ICMP header" << std::endl;
             return;
           }
-          icmp_echo_hdr icmpHeader;
-          icmpHeader.icmp_type = payload[24];
+          icmp_hdr s_icmpHeader = *reinterpret_cast<const icmp_hdr *>(payload.data() + 20);
+          icmp_echo_hdr icmpHeader = *reinterpret_cast<const icmp_echo_hdr *>(payload.data() + 20);
+          std::cerr << "ICMP type: " << s_icmpHeader.icmp_type << std::endl;
+          std::cerr << "ICMP code: " << s_icmpHeader.icmp_code << std::endl;
+          std::cerr << "ICMP ID: " << icmpHeader.icmp_id << std::endl;
+          std::cerr << "ICMP sequence: " << icmpHeader.icmp_seq << std::endl;
+          icmpHeader.icmp_id = ntohs(icmpHeader.icmp_id);
+          icmpHeader.icmp_seq = ntohs(icmpHeader.icmp_seq);
+          print_hdr_icmp(payload.data() + 20);
+          // icmpHeader.icmp_type = payload[24];
           if (icmpHeader.icmp_type != ICMP_TYPE_ECHO_REQUEST)
           {
             std::cerr << "Not an ICMP echo request" << std::endl;
             return;
           }
-          icmpHeader.icmp_code = payload[25];
-          icmpHeader.icmp_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 26));
-          icmpHeader.icmp_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 28));
-          icmpHeader.icmp_seq = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 30));
-          std::cerr << "ICMP type: " << icmpHeader.icmp_type << std::endl;
-          std::cerr << "ICMP code: " << icmpHeader.icmp_code << std::endl;
-          std::cerr << "ICMP id: " << icmpHeader.icmp_id << std::endl;
-          std::cerr << "ICMP seq: " << icmpHeader.icmp_seq << std::endl;
+          // icmpHeader.icmp_code = payload[25];
+          // icmpHeader.icmp_sum = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 26));
+          // icmpHeader.icmp_id = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 28));
+          // icmpHeader.icmp_seq = ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + 30));
 
           // checksum
           sum = 0;
-          for (size_t i = 20; i < 32; i += 2)
+          for (size_t i = 20; i < payload.size(); i += 2)
           {
             sum += ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + i));
+            // fprintf(stderr, "%x\n", sum);
           }
           while (sum >> 16)
           {
             sum = (sum & 0xFFFF) + (sum >> 16);
+            // fprintf(stderr, "%x\n", sum);
           }
           if ((sum & 0xFFFF) != 0xFFFF)
           {
@@ -271,27 +374,28 @@ namespace simple_router
 
           // send ICMP reply
           Buffer reply;
-          reply.resize(14 + 20 + 8);
+          reply.resize(14 + 20 + payload.size() - 20);
           std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
           std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
           *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+          // IP
           reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
           reply[15] = ipHeader.ip_tos;
           *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8); // total length
-          *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(0);      // identification
-          reply[20] = 64;                                                   // not sliced
+          *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(ip_identification++);
+          reply[20] = 64; // not sliced
           reply[21] = 0;
           reply[22] = 64; // TTL
           reply[23] = ip_protocol_icmp;
-          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
-          *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
-          *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
-          // options and padding 4 bytes
-          reply[38] = ICMP_TYPE_ECHO_REPLY;
-          reply[39] = 0;
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
-          *reinterpret_cast<uint16_t *>(reply.data() + 42) = icmpHeader.icmp_id;
-          *reinterpret_cast<uint16_t *>(reply.data() + 44) = icmpHeader.icmp_seq;
+          *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = ipHeader.ip_dst;
+          *reinterpret_cast<uint32_t *>(reply.data() + 30) = ipHeader.ip_src;
+          reply[34] = ICMP_TYPE_ECHO_REPLY;
+          reply[35] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(0);                   // checksum
+          *reinterpret_cast<uint16_t *>(reply.data() + 38) = htons(icmpHeader.icmp_id);  // identifier
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(icmpHeader.icmp_seq); // sequence number
+          std::memcpy(reply.data() + 42, payload.data() + 42, payload.size() - 42);
 
           // calculate checksum of ip
           sum = 0;
@@ -307,7 +411,7 @@ namespace simple_router
 
           // calculate checksum of icmp
           sum = 0;
-          for (size_t i = 38; i < 46; i += 2)
+          for (size_t i = 34; i < reply.size(); i += 2)
           {
             sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
           }
@@ -315,7 +419,11 @@ namespace simple_router
           {
             sum = (sum & 0xFFFF) + (sum >> 16);
           }
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(~sum);
+
+          print_hdr_eth(reply.data());
+          print_hdr_ip(reply.data() + 14);
+          print_hdr_icmp(reply.data() + 34);
 
           sendPacket(reply, inIface);
         }
@@ -339,12 +447,11 @@ namespace simple_router
           *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
           *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
           *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
-          // options and padding 4 bytes
-          reply[38] = ICMP_TYPE_DEST_UNREACH;
-          reply[39] = 0;
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
-          *reinterpret_cast<uint16_t *>(reply.data() + 42) = 0;
-          *reinterpret_cast<uint16_t *>(reply.data() + 44) = 0;
+          reply[34] = ICMP_TYPE_DEST_UNREACH;
+          reply[35] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(0); // checksum
+          *reinterpret_cast<uint16_t *>(reply.data() + 38) = htons(0); // unused
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // unused
 
           // calculate checksum of ip
           sum = 0;
@@ -360,7 +467,7 @@ namespace simple_router
 
           // calculate checksum of icmp
           sum = 0;
-          for (size_t i = 38; i < 46; i += 2)
+          for (size_t i = 34; i < 42; i += 2)
           {
             sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
           }
@@ -368,7 +475,7 @@ namespace simple_router
           {
             sum = (sum & 0xFFFF) + (sum >> 16);
           }
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(~sum);
 
           sendPacket(reply, inIface);
         }
@@ -398,12 +505,11 @@ namespace simple_router
           *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum ?
           *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_dst);
           *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_src);
-          // options and padding 4 bytes
-          reply[38] = ICMP_TYPE_TIME_EXCEEDED;
-          reply[39] = 0;
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // checksum ?
-          *reinterpret_cast<uint16_t *>(reply.data() + 42) = 0;
-          *reinterpret_cast<uint16_t *>(reply.data() + 44) = 0;
+          reply[34] = ICMP_TYPE_TIME_EXCEEDED;
+          reply[35] = 0;
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(0); // checksum
+          *reinterpret_cast<uint16_t *>(reply.data() + 38) = htons(0); // unused
+          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(0); // unused
 
           // calculate checksum of ip
           sum = 0;
@@ -419,7 +525,7 @@ namespace simple_router
 
           // calculate checksum of icmp
           sum = 0;
-          for (size_t i = 38; i < 46; i += 2)
+          for (size_t i = 34; i < 42; i += 2)
           {
             sum += ntohs(*reinterpret_cast<const uint16_t *>(reply.data() + i));
           }
@@ -427,7 +533,7 @@ namespace simple_router
           {
             sum = (sum & 0xFFFF) + (sum >> 16);
           }
-          *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(~sum);
+          *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(~sum);
 
           sendPacket(reply, inIface);
           return;
@@ -435,38 +541,10 @@ namespace simple_router
 
         // decrement ttl
         ipHeader.ip_ttl--;
-        // recalculate checksum
-        sum = 0;
-        for (size_t i = 0; i < 20; i += 2)
-        {
-          sum += ntohs(*reinterpret_cast<const uint16_t *>(payload.data() + i));
-        }
-        while (sum >> 16)
-        {
-          sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-        ipHeader.ip_sum = ~sum;
-        // update ip header to packet
-        Buffer reply;
-        reply.resize(14 + 20 + payload.size() - 20);
-        std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
-        std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
-        *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
-        reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
-        reply[15] = ipHeader.ip_tos;
-        *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(ipHeader.ip_len);
-        *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(ipHeader.ip_id);
-        *reinterpret_cast<uint16_t *>(reply.data() + 20) = htons(ipHeader.ip_off);
-        reply[22] = ipHeader.ip_ttl;
-        reply[23] = ipHeader.ip_p;
-        *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(ipHeader.ip_sum);
-        *reinterpret_cast<uint32_t *>(reply.data() + 26) = htonl(ipHeader.ip_src);
-        *reinterpret_cast<uint32_t *>(reply.data() + 30) = htonl(ipHeader.ip_dst);
-        std::memcpy(reply.data() + 34, payload.data() + 20, payload.size() - 20);
 
         // check if destination IP is in routing table
         auto entry = m_routingTable.lookup(ipHeader.ip_dst);
-        if (entry.dest & entry.mask != entry.dest & ipHeader.ip_dst)
+        if ((entry.dest & entry.mask) != (ipHeader.ip_dst & entry.mask))
         {
           std::cerr << "Destination IP is not in routing table" << std::endl;
           return;
@@ -475,8 +553,68 @@ namespace simple_router
         std::cerr << "Next hop IP address: " << ipToString(entry.dest) << std::endl;
         std::cerr << "Output interface: " << entry.ifName << std::endl;
 
-        // send packet to next hop
-        sendPacket(reply, entry.ifName);
+        Buffer forward;
+        forward.resize(14 + 20 + payload.size() - 20);
+        std::memcpy(forward.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+        *reinterpret_cast<uint16_t *>(forward.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
+        // IP
+        std::memcpy(forward.data() + 14, payload.data(), payload.size());
+        // decrement ttl
+        forward[22] = ipHeader.ip_ttl;
+
+        // calculate checksum of ip
+        *reinterpret_cast<uint16_t *>(forward.data() + 24) = htons(0); // checksum
+        sum = 0;
+        for (size_t i = 14; i < 34; i += 2)
+        {
+          sum += ntohs(*reinterpret_cast<const uint16_t *>(forward.data() + i));
+        }
+        while (sum >> 16)
+        {
+          sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        *reinterpret_cast<uint16_t *>(forward.data() + 24) = htons(~sum);
+
+        print_hdr_eth(forward.data());
+        print_hdr_ip(forward.data() + 14);
+
+        // find mac
+        auto arpEntry = m_arp.lookup(entry.dest);
+        if (arpEntry == nullptr)
+        {
+          std::cerr << "Destination IP is not in ARP cache" << std::endl;
+          // send ARP request
+          Buffer request;
+          request.resize(14 + 28); // ethernet header + arp header
+          // ethernet
+          std::memcpy(request.data(), "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN);
+          std::memcpy(request.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(request.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+          // arp
+          *reinterpret_cast<uint16_t *>(request.data() + 14) = htons(arp_hrd_ethernet);
+          *reinterpret_cast<uint16_t *>(request.data() + 16) = htons(ethertype_ip);
+          request[18] = ETHER_ADDR_LEN;
+          request[19] = 4;
+          *reinterpret_cast<uint16_t *>(request.data() + 20) = htons(arp_op_request);
+          std::memcpy(request.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(request.data() + 28) = iface->ip;
+          std::memcpy(request.data() + 32, "\x00\x00\x00\x00\x00\x00", ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(request.data() + 38) = ipHeader.ip_dst;
+          std::cerr << "Send arp request for ip: " << ipToString(ipHeader.ip_dst) << std::endl;
+          print_hdr_eth(request.data());
+          print_hdr_arp(request.data() + 14);
+          sendPacket(request, entry.ifName);
+
+          // save packet
+          PacketQueueItem item;
+          item.forward = forward;
+          item.ip = ipHeader.ip_dst;
+          item.face = entry.ifName;
+          m_packetQueue.push_back(item);
+          return;
+        }
+        std::memcpy(forward.data(), arpEntry->mac.data(), ETHER_ADDR_LEN);
+        sendPacket(forward, entry.ifName);
       }
     }
     else

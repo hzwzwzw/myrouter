@@ -74,8 +74,8 @@ namespace simple_router
     uint8_t icmp_type;
     uint8_t icmp_code;
     uint16_t icmp_sum;
-    uint8_t icmp_id;
-    uint8_t icmp_seq;
+    uint16_t icmp_id;
+    uint16_t icmp_seq;
   } __attribute__((packed));
 
   struct icmp_tle_hdr

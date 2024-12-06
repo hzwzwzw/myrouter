@@ -23,14 +23,28 @@
 #include "core/interface.hpp"
 
 #include "pox.hpp"
+#include <vector>
 
 namespace simple_router
 {
+
+  class PacketQueueItem
+  {
+  public:
+    Buffer forward;
+    uint32_t ip;
+    std::string face;
+  };
 
   class SimpleRouter
   {
   public:
     SimpleRouter();
+
+    bool
+    addrIsInterface(const Buffer &addr) const;
+    bool
+    ipIsInterface(uint32_t ip) const;
 
     /**
      * IMPLEMENT THIS METHOD
@@ -40,8 +54,8 @@ namespace simple_router
      * interface \p inIface are passed in as parameters. The packet is
      * complete with ethernet headers.
      */
-    void
-    handlePacket(const Buffer &packet, const std::string &inIface);
+    void handlePacket(const Buffer &packet, const std::string &inIface);
+    void send_arp_reply(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface);
 
     /**
      * USE THIS METHOD TO SEND PACKETS
@@ -110,6 +124,8 @@ namespace simple_router
     RoutingTable m_routingTable;
     std::set<Interface> m_ifaces;
     std::map<std::string, uint32_t> m_ifNameToIpMap;
+
+    int ip_identification = 0;
 
     friend class Router;
     pox::PacketInjectorPrx m_pox;

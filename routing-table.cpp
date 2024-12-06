@@ -22,6 +22,7 @@
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
+#include <iostream>
 
 namespace simple_router
 {
@@ -36,27 +37,36 @@ namespace simple_router
     // FILL THIS IN
 
     // longest prefix match
-    int max = 0;
+    std::cerr << "Looking up ip address: " << ipToString(ip) << std::endl;
+    int found = 0;
+    unsigned max = 0;
     RoutingTableEntry entry_max;
     for (const auto &entry : m_entries)
     {
       // check if the ip address is in the subnet
       if ((ip & entry.mask) == (entry.dest & entry.mask))
       {
-        if (entry.mask > max)
+        if (entry.mask > max || found == 0)
         {
+          found = 1;
+          std::cerr << "Checking entry: " << ipToString(entry.dest) << "/" << entry.mask << std::endl;
+          max = entry.mask;
+          entry_max = entry;
+        }
+        {
+          std::cerr << "Checking entry: " << ipToString(entry.dest) << "/" << entry.mask << std::endl;
           max = entry.mask;
           entry_max = entry;
         }
       }
     }
-    if (max != 0)
+    if (found)
     {
       return entry_max;
     }
     else
     {
-      // std::cerr << "No matching entry found for ip address: " << ipToString(ip) << std::endl;
+      std::cerr << "No matching entry found for ip address: " << ipToString(ip) << std::endl;
       return RoutingTableEntry();
     }
   }
