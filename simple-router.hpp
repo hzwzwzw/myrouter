@@ -55,6 +55,7 @@ namespace simple_router
      * complete with ethernet headers.
      */
     void handlePacket(const Buffer &packet, const std::string &inIface);
+    void send_arp_request(uint32_t ip);
     void send_arp_reply(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface);
 
     /**

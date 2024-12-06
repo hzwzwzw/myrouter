@@ -66,6 +66,35 @@ namespace simple_router
   }
 
   void
+  SimpleRouter::send_arp_request(uint32_t ip)
+  {
+    // find in routing table
+    auto entry = m_routingTable.lookup(ip);
+    auto iface = findIfaceByName(entry.ifName);
+
+    Buffer request;
+    request.resize(14 + 28); // ethernet header + arp header
+    // ethernet
+    std::memcpy(request.data(), "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN);
+    std::memcpy(request.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+    *reinterpret_cast<uint16_t *>(request.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+    // arp
+    *reinterpret_cast<uint16_t *>(request.data() + 14) = htons(arp_hrd_ethernet);
+    *reinterpret_cast<uint16_t *>(request.data() + 16) = htons(ethertype_ip); // ipv4
+    request[18] = ETHER_ADDR_LEN;
+    request[19] = 4;
+    *reinterpret_cast<uint16_t *>(request.data() + 20) = htons(arp_op_request);
+    std::memcpy(request.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
+    *reinterpret_cast<uint32_t *>(request.data() + 28) = iface->ip;
+    std::memset(request.data() + 32, 0, ETHER_ADDR_LEN);
+    *reinterpret_cast<uint32_t *>(request.data() + 38) = ip;
+
+    print_hdr_eth(request.data());
+    print_hdr_arp(request.data() + 14);
+    sendPacket(request, entry.ifName);
+  }
+
+  void
   SimpleRouter::send_arp_reply(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface)
   {
     // send ARP reply
@@ -245,28 +274,40 @@ namespace simple_router
         std::memcpy(mac.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
         std::cerr << "Sender MAC address: " << macToString(mac) << std::endl;
         // update ARP table
-        m_arp.insertArpEntry(mac, arpHeader.arp_sip);
+        if (m_arp.lookup(arpHeader.arp_sip) != nullptr)
+        {
+          m_arp.removeArpEntry(arpHeader.arp_sip);
+        }
+        auto request = m_arp.insertArpEntry(mac, arpHeader.arp_sip);
+
+        for (auto packet : request->packets)
+        {
+          Buffer forward = packet.packet;
+          std::memcpy(forward.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
+          sendPacket(forward, packet.iface);
+        }
+        m_arp.removeRequest(request);
 
         // send packets in queue
-        std::cerr << m_packetQueue.size() << std::endl;
-        for (auto it = m_packetQueue.begin(); it != m_packetQueue.end();)
-        {
-          if (it->ip == arpHeader.arp_sip)
-          {
-            Buffer forward = it->forward;
-            std::memcpy(forward.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
-            sendPacket(forward, it->face);
-            it = m_packetQueue.erase(it);
-            if (it == m_packetQueue.end())
-            {
-              break;
-            }
-          }
-          else
-          {
-            ++it;
-          }
-        }
+        // std::cerr << m_packetQueue.size() << std::endl;
+        // for (auto it = m_packetQueue.begin(); it != m_packetQueue.end();)
+        // {
+        //   if (it->ip == arpHeader.arp_sip)
+        //   {
+        //     Buffer forward = it->forward;
+        //     std::memcpy(forward.data(), arpHeader.arp_sha, ETHER_ADDR_LEN);
+        //     sendPacket(forward, it->face);
+        //     it = m_packetQueue.erase(it);
+        //     if (it == m_packetQueue.end())
+        //     {
+        //       break;
+        //     }
+        //   }
+        //   else
+        //   {
+        //     ++it;
+        //   }
+        // }
       }
       else
       {
@@ -446,7 +487,7 @@ namespace simple_router
           reply[22] = 64; // TTL
           reply[23] = ip_protocol_icmp;
           *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum
-          *reinterpret_cast<uint32_t *>(reply.data() + 26) = ipHeader.ip_dst;
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = iface->ip;
           *reinterpret_cast<uint32_t *>(reply.data() + 30) = ipHeader.ip_src;
           // ICMP
           reply[34] = ICMP_TYPE_DEST_UNREACH;
@@ -492,7 +533,7 @@ namespace simple_router
         std::cerr << "Destination IP is not one of the router's interfaces" << std::endl;
 
         // ttl decrement
-        if (ipHeader.ip_ttl == 0)
+        if (ipHeader.ip_ttl <= 1)
         {
           std::cerr << "TTL is 0" << std::endl;
           // send ICMP time exceeded
@@ -511,7 +552,7 @@ namespace simple_router
           reply[22] = 64; // TTL
           reply[23] = ip_protocol_icmp;
           *reinterpret_cast<uint16_t *>(reply.data() + 24) = htons(0); // checksum
-          *reinterpret_cast<uint32_t *>(reply.data() + 26) = ipHeader.ip_dst;
+          *reinterpret_cast<uint32_t *>(reply.data() + 26) = iface->ip;
           *reinterpret_cast<uint32_t *>(reply.data() + 30) = ipHeader.ip_src;
           // ICMP
           reply[34] = ICMP_TYPE_TIME_EXCEEDED;
@@ -598,27 +639,7 @@ namespace simple_router
         {
           std::cerr << "Destination IP is not in ARP cache" << std::endl;
           // send ARP request
-          Buffer request;
-          request.resize(14 + 28); // ethernet header + arp header
-          // ethernet
-          std::memcpy(request.data(), "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN);
-          std::memcpy(request.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint16_t *>(request.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
-          // arp
-          *reinterpret_cast<uint16_t *>(request.data() + 14) = htons(arp_hrd_ethernet);
-          *reinterpret_cast<uint16_t *>(request.data() + 16) = htons(ethertype_ip);
-          request[18] = ETHER_ADDR_LEN;
-          request[19] = 4;
-          *reinterpret_cast<uint16_t *>(request.data() + 20) = htons(arp_op_request);
-          std::memcpy(request.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(request.data() + 28) = iface->ip;
-          std::memcpy(request.data() + 32, "\x00\x00\x00\x00\x00\x00", ETHER_ADDR_LEN);
-          *reinterpret_cast<uint32_t *>(request.data() + 38) = ipHeader.ip_dst;
-          std::cerr << "Send arp request for ip: " << ipToString(ipHeader.ip_dst) << std::endl;
-          print_hdr_eth(request.data());
-          print_hdr_arp(request.data() + 14);
-          sendPacket(request, entry.ifName);
-
+          m_arp.queueRequest(ipHeader.ip_dst, packet, entry.ifName);
           // save packet
           PacketQueueItem item;
           item.forward = forward;
