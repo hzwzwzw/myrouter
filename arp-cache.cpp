@@ -50,10 +50,36 @@ namespace simple_router
         else
         {
           // Resend the ARP request
-
+          Buffer request;
+          request.resize(14 + 28); // ethernet header + arp header
+          // ethernet
+          std::memcpy(request.data(), "\xFF\xFF\xFF\xFF\xFF\xFF", ETHER_ADDR_LEN);
+          std::memcpy(request.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint16_t *>(request.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_arp);
+          // arp
+          *reinterpret_cast<uint16_t *>(request.data() + 14) = htons(arp_hrd_ethernet);
+          *reinterpret_cast<uint16_t *>(request.data() + 16) = htons(ethertype_ip);
+          request[18] = ETHER_ADDR_LEN;
+          request[19] = 4;
+          *reinterpret_cast<uint16_t *>(request.data() + 20) = htons(arp_op_request);
+          std::memcpy(request.data() + 22, iface->addr.data(), ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(request.data() + 28) = iface->ip;
+          std::memcpy(request.data() + 32, "\x00\x00\x00\x00\x00\x00", ETHER_ADDR_LEN);
+          *reinterpret_cast<uint32_t *>(request.data() + 38) = ipHeader.ip_dst;
+          std::cerr << "Send arp request for ip: " << ipToString(ipHeader.ip_dst) << std::endl;
+          print_hdr_eth(request.data());
+          print_hdr_arp(request.data() + 14);
+          m_router.sendPacket(request, entry.ifName);
           (*it)->timeSent = now;
           (*it)->nTimesSent++;
         }
+      }
+    }
+    for (auto it = m_cacheEntries.begin(); it != m_cacheEntries.end(); it++)
+    {
+      if (now - (*it)->timeAdded >= SR_ARPCACHE_TO)
+      {
+        (*it)->isValid = false;
       }
     }
   }
