@@ -28,13 +28,13 @@
 namespace simple_router
 {
 
-  class PacketQueueItem
-  {
-  public:
-    Buffer forward;
-    uint32_t ip;
-    std::string face;
-  };
+  // class PacketQueueItem
+  // {
+  // public:
+  //   Buffer forward;
+  //   uint32_t ip;
+  //   std::string face;
+  // };
 
   class SimpleRouter
   {
@@ -127,6 +127,7 @@ namespace simple_router
     std::map<std::string, uint32_t> m_ifNameToIpMap;
 
     int ip_identification = 0;
+    int icmp_identification = 0;
 
     friend class Router;
     pox::PacketInjectorPrx m_pox;

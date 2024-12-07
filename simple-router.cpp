@@ -33,7 +33,7 @@ namespace simple_router
    * complete with ethernet headers.
    */
 
-  std::vector<PacketQueueItem> m_packetQueue; // buffer, ip, iface
+  // std::vector<PacketQueueItem> m_packetQueue; // buffer, ip, iface
   bool
   SimpleRouter::addrIsInterface(const Buffer &addr) const
   {
@@ -415,14 +415,15 @@ namespace simple_router
 
           // send ICMP reply
           Buffer reply;
-          reply.resize(14 + 20 + payload.size() - 20);
+          reply.resize(14 + 20 + 8 + payload.size() - 20 - 8);
+          std::cerr << "Payload size:" << payload.size() << std::endl;
           std::memcpy(reply.data(), ethHeader.ether_shost, ETHER_ADDR_LEN);
           std::memcpy(reply.data() + ETHER_ADDR_LEN, iface->addr.data(), ETHER_ADDR_LEN);
           *reinterpret_cast<uint16_t *>(reply.data() + 2 * ETHER_ADDR_LEN) = htons(ethertype_ip);
           // IP
           reply[14] = (ipHeader.ip_v << 4) | ipHeader.ip_hl;
           reply[15] = ipHeader.ip_tos;
-          *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8); // total length
+          *reinterpret_cast<uint16_t *>(reply.data() + 16) = htons(20 + 8 + payload.size() - 28); // total length
           *reinterpret_cast<uint16_t *>(reply.data() + 18) = htons(ip_identification++);
           reply[20] = 64; // not sliced
           reply[21] = 0;
@@ -436,7 +437,7 @@ namespace simple_router
           *reinterpret_cast<uint16_t *>(reply.data() + 36) = htons(0);                   // checksum
           *reinterpret_cast<uint16_t *>(reply.data() + 38) = htons(icmpHeader.icmp_id);  // identifier
           *reinterpret_cast<uint16_t *>(reply.data() + 40) = htons(icmpHeader.icmp_seq); // sequence number
-          std::memcpy(reply.data() + 42, payload.data() + 42, payload.size() - 42);
+          std::memcpy(reply.data() + 42, payload.data() + 28, payload.size() - 28);
 
           // calculate checksum of ip
           sum = 0;
@@ -640,12 +641,12 @@ namespace simple_router
           std::cerr << "Destination IP is not in ARP cache" << std::endl;
           // send ARP request
           m_arp.queueRequest(ipHeader.ip_dst, packet, entry.ifName);
-          // save packet
-          PacketQueueItem item;
-          item.forward = forward;
-          item.ip = ipHeader.ip_dst;
-          item.face = entry.ifName;
-          m_packetQueue.push_back(item);
+          // // save packet
+          // PacketQueueItem item;
+          // item.forward = forward;
+          // item.ip = ipHeader.ip_dst;
+          // item.face = entry.ifName;
+          // m_packetQueue.push_back(item);
           return;
         }
         std::memcpy(forward.data(), arpEntry->mac.data(), ETHER_ADDR_LEN);
