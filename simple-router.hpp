@@ -57,6 +57,12 @@ namespace simple_router
     void handlePacket(const Buffer &packet, const std::string &inIface);
     void send_arp_request(uint32_t ip);
     void send_arp_reply(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface);
+    void send_arp_reply_third(ethernet_hdr ethHeader, arp_hdr arpHeader, const Interface *iface, const std::string &inIface, const Buffer &packet);
+    void send_icmp_reply(ethernet_hdr ethHeader, ip_hdr ipHeader, icmp_echo_hdr icmpHeader, const Interface *iface, const std::string &inIface, const Buffer &payload);
+    void send_icmp_ttl(ethernet_hdr ethHeader, ip_hdr ipHeader, const Interface *iface, const std::string &inIface, const Buffer &payload);
+    void send_icmp_unreach(ethernet_hdr ethHeader, ip_hdr ipHeader, const Interface *iface, const std::string &inIface, const Buffer &payload);
+
+    void forward(const Buffer &packet, const Interface *iface, const ip_hdr &ipHeader, const Buffer &payload, const RoutingTableEntry &entry);
 
     /**
      * USE THIS METHOD TO SEND PACKETS
