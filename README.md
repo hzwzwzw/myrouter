@@ -1,12 +1,7 @@
-Computer Networks: Project 2 (Build Your Own Router)
-====================================
+THSS 计算机网络 Router 大作业。写的时候比较赶时间，很多地方图省事，代码质量也较低。路由表之类的地方都使用最简单的实现。
 
-In this project, you will be writing a simple router with a static routing table. Your router will receive raw Ethernet frames and process them just like a real router: forward them to the correct outgoing interface, create new frames, etc. The starter code will provide the framework to receive Ethernet frames; your job is to create the forwarding logic.
+个人感觉作业上手难度很高，但总体实现起来还好。
 
-You are allowed to use some high-level abstractions, including C++11 extensions, for parts that are not directly related to networking, such as string parsing, multi-threading, etc.
 
-For more detailed information about the project and starter code, please refer to the project spec.
 
-## Acknowledgement
-
-The implementation is based on thr oriingal code for UCLA CS118 Project3 by professor Alexander Afanasyev.
+\* 这个仓库是对 THSS 计算机网络 / UCLA CS118 Router 项目的修改。
